@@ -1,214 +1,137 @@
-import os
 import discord
 from discord.ext import commands
 import yt_dlp
 import asyncio
-from dotenv import load_dotenv
 
-load_dotenv()
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-
+# Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-bot = commands.Bot(
-    command_prefix="gaby!",
-    intents=intents,
-    help_command=None
-)
-
+# Queue system
 music_queue = []
 
-YDL_OPTIONS = {
-    "format": "bestaudio/best",
-    "default_search": "ytsearch",
-    "noplaylist": True,
-    "quiet": True
-}
-
+# FFmpeg options
 FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn"
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
 }
 
-
-async def play_next(ctx):
-    if not music_queue:
-        return
-
-    query = music_queue.pop(0)
-
-    try:
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            info = ydl.extract_info(query, download=False)
-
-            if "entries" in info:
-                info = info["entries"][0]
-
-            url = info["url"]
-            title = info["title"]
-
-        source = await discord.FFmpegOpusAudio.from_probe(
-            url,
-            **FFMPEG_OPTIONS
-        )
-
-        vc = ctx.voice_client
-
-        vc.play(
-            source,
-            after=lambda e: asyncio.run_coroutine_threadsafe(
-                play_next(ctx),
-                bot.loop
-            )
-        )
-
-        await ctx.send(f"🎵 Sedang memutar: **{title}**")
-
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
-
+# yt-dlp options
+YDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'ytsearch'
+}
 
 @bot.event
 async def on_ready():
-    print(f"✅ Login sebagai {bot.user}")
-
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.listening,
-            name="musik 24/7"
-        )
-    )
-
+    print(f'{bot.user} udah online!')
 
 @bot.command()
 async def join(ctx):
-    if not ctx.author.voice:
-        return await ctx.send(
-            "❌ Masuk voice channel dulu bro."
-        )
-
-    channel = ctx.author.voice.channel
-
-    if ctx.voice_client is None:
+    """Join voice channel"""
+    if ctx.author.voice:
+        channel = ctx.author.voice.channel
         await channel.connect()
-
-    await ctx.send(
-        f"✅ Bergabung ke **{channel.name}**"
-    )
-
+        await ctx.send(f'Udah join ke {channel.name}')
+    else:
+        await ctx.send('Lo harus di voice channel dulu!')
 
 @bot.command()
 async def leave(ctx):
+    """Leave voice channel"""
     if ctx.voice_client:
-        music_queue.clear()
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Keluar dari voice channel")
-
+        await ctx.send('Dah cabut!')
 
 @bot.command()
-async def play(ctx, *, lagu):
-    if not ctx.author.voice:
-        return await ctx.send(
-            "❌ Masuk voice channel dulu bro."
-        )
-
-    if ctx.voice_client is None:
-        await ctx.author.voice.channel.connect()
-
-    music_queue.append(lagu)
-
-    await ctx.send(
-        f"➕ Ditambahkan ke antrean: **{lagu}**"
-    )
-
-    if not ctx.voice_client.is_playing():
+async def play(ctx, *, query):
+    """Play music dari YouTube"""
+    voice_client = ctx.voice_client
+    
+    if not voice_client:
+        if ctx.author.voice:
+            channel = ctx.author.voice.channel
+            voice_client = await channel.connect()
+        else:
+            await ctx.send('Join voice channel dulu!')
+            return
+    
+    async with ctx.typing():
+        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+            info = ydl.extract_info(query, download=False)
+            
+            if 'entries' in info:
+                # Playlist atau search result
+                url = info['entries'][0]['url']
+                title = info['entries'][0]['title']
+            else:
+                url = info['url']
+                title = info['title']
+            
+            music_queue.append((url, title))
+    
+    await ctx.send(f'Ditambahin ke queue: **{title}**')
+    
+    if not voice_client.is_playing():
         await play_next(ctx)
 
+async def play_next(ctx):
+    """Play next song in queue"""
+    voice_client = ctx.voice_client
+    
+    if music_queue:
+        url, title = music_queue.pop(0)
+        audio_source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
+        
+        voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+        await ctx.send(f'Sekarang playing: **{title}**')
+    else:
+        await ctx.send('Queue kosong!')
 
 @bot.command()
 async def skip(ctx):
+    """Skip current song"""
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await ctx.send("⏭️ Lagu dilewati")
-
-
-@bot.command()
-async def stop(ctx):
-    music_queue.clear()
-
-    if ctx.voice_client:
-        ctx.voice_client.stop()
-
-    await ctx.send("⏹️ Musik dihentikan")
-
+        await ctx.send('Di-skip!')
+    else:
+        await ctx.send('Gak ada lagu yang playing!')
 
 @bot.command()
 async def pause(ctx):
+    """Pause music"""
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
-        await ctx.send("⏸️ Musik dijeda")
-
+        await ctx.send('Di-pause!')
+    else:
+        await ctx.send('Gak ada lagu yang playing!')
 
 @bot.command()
 async def resume(ctx):
-    if ctx.voice_client:
+    """Resume music"""
+    if ctx.voice_client and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
-        await ctx.send("▶️ Musik dilanjutkan")
-
+        await ctx.send('Di-resume!')
+    else:
+        await ctx.send('Gak ada lagu yang di-pause!')
 
 @bot.command()
 async def queue(ctx):
-    if not music_queue:
-        return await ctx.send(
-            "📭 Antrean kosong"
-        )
-
-    daftar = "\n".join(
-        f"{i+1}. {lagu}"
-        for i, lagu in enumerate(music_queue)
-    )
-
-    await ctx.send(
-        f"📜 Antrean:\n```{daftar}```"
-    )
-
-
-@bot.command()
-async def now(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        await ctx.send(
-            "🎶 Ada musik yang sedang diputar."
-        )
+    """Show current queue"""
+    if music_queue:
+        queue_list = '\n'.join([f'{i+1}. {title}' for i, (_, title) in enumerate(music_queue)])
+        await ctx.send(f'**Queue:**\n{queue_list}')
     else:
-        await ctx.send(
-            "📭 Tidak ada musik yang diputar."
-        )
-
+        await ctx.send('Queue kosong!')
 
 @bot.command()
-async def ping(ctx):
-    await ctx.send(
-        f"🏓 {round(bot.latency * 1000)}ms"
-    )
+async def clear(ctx):
+    """Clear the queue"""
+    music_queue.clear()
+    await ctx.send('Queue udah di-clear!')
 
-
-@bot.command()
-async def help(ctx):
-    await ctx.send("""
-🎵 hi aku gaby, bot music buatan @flyingdutchweirdman
-
-gaby!join
-gaby!leave
-gaby!play <judul lagu>
-gaby!skip
-gaby!stop
-gaby!pause
-gaby!resume
-gaby!queue
-gaby!now
-gaby!ping
-""")
-
-bot.run(TOKEN)
+# Replace with your bot token
+bot.run('YOUR_BOT_TOKEN_HERE')
